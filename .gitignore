@@ -23,5 +23,5 @@
 hs_err_pid*
 
 # Intellij configuration files
-#.idea/*
+.idea/*
 *.iml
