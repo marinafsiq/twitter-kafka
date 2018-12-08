@@ -1,6 +1,7 @@
 package com.marina.twitterkafka.consumer;
 
 import com.google.common.collect.Lists;
+import com.marina.twitterkafka.utils.KafkaConstants;
 import com.marina.twitterkafka.utils.TwitterConstants;
 import com.twitter.hbc.ClientBuilder;
 import com.twitter.hbc.core.Client;
@@ -11,6 +12,8 @@ import com.twitter.hbc.core.endpoint.StatusesFilterEndpoint;
 import com.twitter.hbc.core.processor.StringDelimitedProcessor;
 import com.twitter.hbc.httpclient.auth.Authentication;
 import com.twitter.hbc.httpclient.auth.OAuth1;
+import org.apache.kafka.clients.producer.*;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,6 +23,7 @@ import java.io.FileReader;
 import java.util.Dictionary;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -29,35 +33,61 @@ public class TwitterConsumer {
     public void run(){
 
         //creating Twitter client and connecting to it.
-        BlockingQueue<String> msgQueue = new LinkedBlockingQueue<String>(100);
-        List<String> termsToSearch = Lists.newArrayList("healthylifestyle", "yoga");
+        BlockingQueue<String> msgQueue = new LinkedBlockingQueue<String>(1000);
+        List<String> termsToSearch = Lists.newArrayList("healthylifestyle", "yoga", "run", "running", "healthyfood", "swimming", "meditation");
         HashMap<String, String> keysAndTokens = getTwitterKeysAndTokens("//home//marina//IdeaProjects//twitter-kafka//twitterpass.log");
         Client client = getTwitterClient(msgQueue, termsToSearch, keysAndTokens);
         client.connect();
 
+        // getting Kafka Producer
+        KafkaProducer<String, String> producer = getProducer();
 
-        //connection information
-        StringBuilder stb = new StringBuilder();
-        int counter = 0;
-        //getting the data
+
+
+        //Reading twitter data (from msgQueue) and placing them into kafka
         while(!client.isDone()){
             try{
-                String str = msgQueue.take();
-                stb.append(str);
-                stb.append("\n");
-                System.out.println(counter++);
-                System.out.println(str);
+                String msg = msgQueue.take();
+                ProducerRecord<String, String> record = new ProducerRecord<String, String>("first_topic", "\n\n-------> NOVA MENSAGEM!!!!\n" + msg);
+                producer.send(record, new Callback() {
+                    public void onCompletion(RecordMetadata recordMetadata, Exception e) {
+                        if(e!=null)
+                            logger.error("It iwas not possible to send records to the topic.", e);
+                    }
+                });
+                producer.flush();
             }catch (Exception e){
-                logger.error("It was not able to get messages from Twitter client. Closing client connection.");
+                logger.error("It was not possible to get messages from Twitter client. Closing client connection.");
                 client.stop();
+                producer.close();
                 e.printStackTrace();
             }
         }
 
-        String finalStr = stb.toString();
-        System.out.printf(finalStr);
 
         client.stop();
+        producer.close();
+    }
+
+    private KafkaProducer<String, String> getProducer(){
+        Properties props = new Properties();
+        props.setProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KafkaConstants.BOOTSTRAP_SERVERS);
+        props.setProperty(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        props.setProperty(ProducerConfig.ACKS_CONFIG, KafkaConstants.ACKS_ALL);
+
+        //to make a safe producer - Idempotence
+        props.setProperty(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+
+        //high throughput producer (at the expense o a bit of latency and CPU usage)
+        props.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, KafkaConstants.COMPRESSION_TYPE_SNAPPY);
+        props.setProperty(ProducerConfig.LINGER_MS_CONFIG, "20");
+        props.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(32*1024)); //32KB batch size
+
+
+        KafkaProducer<String, String> producer = new KafkaProducer<String, String>(props);
+
+        return producer;
     }
 
 
